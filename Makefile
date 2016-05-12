@@ -1,6 +1,6 @@
 # $@ is the file name of the target
 # $^ is the name of all dependencies separated by spaces, duplicate names removed
-# -c means compile only (no executable, only make the .o file)a
+# -c means compile only (no executable, only make the .o file)
 #
 
 CXX=g++ -std=c++11

@@ -1,7 +1,8 @@
-# test_exactcalc.R
 # Run this just to test that the c++ implementation is giving the correct answer
 # Only use with p<=5!
-# Run from the command line with Rscript test_mvtnormcdf.R BOUNDS_FILE COR_FILE
+# Run from the command line with Rscript test_exactcalc.R BOUNDS_FILE COR_FILE
+
+
 library(combinat)
 library(mvtnorm)
 

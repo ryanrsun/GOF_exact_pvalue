@@ -5,6 +5,17 @@
 //  Copyright © 2015 Ryan Sun. All rights reserved.
 //
 
+
+// The syntax for this is './GOF_exact_pvalue [num_bounds] [bounds_file] [cor_file] [method]
+// where method is an integer 0-4.
+// Method 0 is the standard exact calculation, do not use with num_bounds>5.
+// Method 1 approximates the correlation matrix as exchangeable, saves d! permutations of order.
+// Method 2 is Method 1 AND we don't calculate all the terms in the |Z| PDF - instead
+// just do 2^d times the first term.
+// Method 3 doesn't permute the ordering of the terms (aka doesn't permute the correlation matrix)
+// at all, saves d! permutations.
+// Method 4 is Method 3 AND we don't calculate all the terms in the |Z| PDF.
+
 #include <iostream>
 #include <algorithm>
 #include <vector>
@@ -236,12 +247,7 @@ double exact_calc_exch(const std::vector<double> &bounds,
                   const std::vector<double> &cor_vec)
 {
     int d = bounds.size();
-    double num_outer_loops = factorial(d);
     double num_inner_loops = pow(2.0, d);
-
-    // To hold results
-    std::vector<double> loop_sums(num_outer_loops);
-    std::vector<double> loop_errs(num_outer_loops);
 
     // Make the upper and lower bounds
     std::vector<double> lower_bound((2*d-1), 0);
@@ -256,6 +262,17 @@ double exact_calc_exch(const std::vector<double> &bounds,
         upper_bound[temp_it] = bounds[temp_it];
     }
 
+		// Find the mean of the covariance vector
+		double num_rho = d*(d-1)/2;
+		double mean_rho = 0;	
+		for (int temp_it=0; temp_it<num_rho; temp_it++)
+		{
+			mean_rho += cor_vec[temp_it] / num_rho;
+		}
+
+		// Build the (exchangeable) correlation vector
+		std::vector<int> new_cor_A(num_rho, mean_rho);
+
     // Random seed before integration starts
     srand(time(NULL));
 
@@ -266,13 +283,16 @@ double exact_calc_exch(const std::vector<double> &bounds,
         class_A[temp_it] = temp_it + 1;
     }
 
-		// Hack
-		std::vector<double> new_cor_A(cor_vec.size());
-		for (int temp_it=0; temp_it<cor_vec.size(); ++temp_it)
-		{
-			new_cor_A[temp_it] = cor_vec[temp_it];
-		}
-	
+		// Account for delta_p
+    mat Delta_p(d-1,d);
+    Delta_p.zeros();
+
+    for (int temp_it=0; temp_it<(d-1); ++temp_it)
+    {
+        Delta_p(temp_it, temp_it) = -1;
+        Delta_p(temp_it, temp_it+1) = 1;
+    }
+
 		// Make the class_S
     std::vector<int> build_vec;
     std::vector<std::vector<int> >class_S;
@@ -321,17 +341,6 @@ double exact_calc_exch(const std::vector<double> &bounds,
             v_mat(temp_it, temp_it) = 1;
         }
 
-        // Account for delta_p
-        mat Delta_p(d-1,d);
-        Delta_p.zeros();
-
-		    for (int temp_it=0; temp_it<(d-1); ++temp_it)
-        {
-            Delta_p(temp_it, temp_it) = -1;
-            Delta_p(temp_it, temp_it+1) = 1;
-        }
-
-
         // bottom left addition
         mat bottom_left = Delta_p*v_mat;
         // bottom right
@@ -346,6 +355,9 @@ double exact_calc_exch(const std::vector<double> &bounds,
         // Add to final_cor_s_a
         // Divide to get the variances of 1
         // It's clear that we need to divide!!! or else the variance matrix is not p.s.d
+        // The division is fine because the last (d-1) bounds are 0 to Inf, otherwise we
+        // would also have to divide the bounds by the same amount.
+        
         for (int temp_it=0; temp_it<(d-1); ++temp_it)
         {
             for (int second_it=0; second_it<d; ++second_it)
@@ -369,13 +381,19 @@ double exact_calc_exch(const std::vector<double> &bounds,
 
     }   // inner loop, for each S 
 
-	// The p-value
-	double p_value = 1;
-	p_value -= temp_sum_prob * factorial(d);
 
-	return p_value;
+  	// The p-value
+	  double p_value = 1;
+	  p_value -= temp_sum_prob * factorial(d);
+
+	  return p_value;
 
 }
+
+
+//////////////////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////////////////
+// Exchangeable approximation, don't do the +/- permutation for PDF of |Z|
 
 
 double exact_calc_exch_noS(const std::vector<double> &bounds,
@@ -501,6 +519,15 @@ double exact_calc_noperm(const std::vector<double> &bounds,
 		// Don't ever need to permute this, just here for consistency
 		std::vector<double> new_cor_A = cor_vec;
 
+	  // Account for delta_p
+    mat Delta_p(d-1,d);
+    Delta_p.zeros();
+
+    for (int temp_it=0; temp_it<(d-1); ++temp_it)
+    {
+        Delta_p(temp_it, temp_it) = -1;
+        Delta_p(temp_it, temp_it+1) = 1;
+    }
 		 // Make the class_S
     std::vector<int> build_vec;
     std::vector<std::vector<int> >class_S;
@@ -548,17 +575,6 @@ double exact_calc_noperm(const std::vector<double> &bounds,
         {
             v_mat(temp_it, temp_it) = 1;
         }
-
-        // Account for delta_p
-        mat Delta_p(d-1,d);
-        Delta_p.zeros();
-
-				 for (int temp_it=0; temp_it<(d-1); ++temp_it)
-        {
-            Delta_p(temp_it, temp_it) = -1;
-            Delta_p(temp_it, temp_it+1) = 1;
-        }
-
 
         // bottom left addition
         mat bottom_left = Delta_p*v_mat;
@@ -765,7 +781,8 @@ int main(int argc, const char * argv[]) {
     //std::vector<double> cor_vec {0.01912024, 0.15498892, 0.12003188, 0.21301551, 0.14181763, 0.21795605, 0.12711216, 0.23954297, 0.17157866, 0.10482516};
     //std::vector<double> cor_vec {0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1};
     
-    //clock_t begin = std::clock();
+		
+		//clock_t begin = std::clock();
 		double result;
 
 		// Choose which calculation method to use
@@ -795,7 +812,7 @@ int main(int argc, const char * argv[]) {
 			std::cout << "Invalid choice of method!";
 			return 1;
 		}
-   
+  	
     //clock_t end = std::clock();
     //double elapsed_secs = double(end - begin) / CLOCKS_PER_SEC;
     //std::cout << elapsed_secs << std::endl;
