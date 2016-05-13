@@ -16,15 +16,19 @@
 // at all, saves d! permutations.
 // Method 4 is Method 3 AND we don't calculate all the terms in the |Z| PDF.
 
+// Update on 5/12/16 - We get rid of all the matrix algebra (no longer need armadillo) and calculate
+// all the relevant correlation matrices without the help of preexisting functions). Before this change,
+// a p-value for d=5 took approximately 50 seconds on local mac.
+// However after the update it's even slower! Approx 1 min. :(
+
+#include <cmath>
 #include <iostream>
+#include <fstream>
 #include <algorithm>
 #include <vector>
-#include <armadillo>
 #include <ctime>
 #include "expandBinary.h"
 #include "mvtnorm.h"
-
-using namespace arma;
 
 double factorial(int x);
 double exact_calc(const std::vector<double> &bounds,
@@ -62,8 +66,8 @@ double exact_calc(const std::vector<double> &bounds,
     std::vector<double> loop_errs(num_outer_loops);
     
     // Make the upper and lower integration bounds from
-		// the GOF bounds.
-		// We use 999 for infinity.
+	// the GOF bounds.
+	// We use 999 for infinity.
     std::vector<double> lower_bound((2*d-1), 0);
     std::vector<double> upper_bound((2*d-1), 999);
     
@@ -79,126 +83,125 @@ double exact_calc(const std::vector<double> &bounds,
     // Random seed before integration starts
     srand(time(NULL));
    
-		// Define Delta_p so we don't have to remake it each time.
-    mat Delta_p(d-1,d);
-    Delta_p.zeros();
-    for (int temp_it=0; temp_it<(d-1); ++temp_it)
-    {
-        Delta_p(temp_it, temp_it) = -1;
-        Delta_p(temp_it, temp_it+1) = 1;
-    }
+	// Make the class_S, all permutations of +/-
+	std::vector<int> build_vec;
+	std::vector<std::vector<int> >class_S;
+	int expanded = expand_binary(d, build_vec, class_S);
+						
+	if (expanded!=0) {
+		std::cout << "Error creating class_S!";
+	    return 1;
+	}
+   
 
-    // Set the first permutation
+	// Set the first permutation order - 1,2,....,d
     std::vector<int> class_A(d);
     for (int temp_it=0; temp_it<d; ++temp_it)
     {
         class_A[temp_it] = temp_it + 1;
     }
     
-    // Outer loop shuffling the order of observations
+    // Outer loop shuffling the order of observations.
+	// We shuffle at the end of the loop.
     int new_iii;            // for keeping track of shuffling order
     int new_jjj;
+    double plus_term;		// for multiplication by Delta_p
+    double minus_term;
     for (double outer_it=0; outer_it<num_outer_loops; ++outer_it)
     {
-       
-				// Correlation vector adjusted for new ordering
-        std::vector<double> new_cor_A(cor_vec.size());
+      	double temp_sum_prob = 0;
+      	double temp_sum_err = 0;
+      	
+		// Inner loop shuffles the permutation of +/-
+		for (double inner_it=0; inner_it<num_inner_loops; ++inner_it)
+		{
+			// New correlation vector for new ordering and +/-
+			std::vector<double> final_cor_A_S(cor_vec.size());
         
-        // Shuffle the variance matrix elements to account for new order
-        for (int iii=2; iii<=d; ++iii) {
-            for (int jjj=1; jjj<=(iii-1); ++jjj) {
-               
-								// In our labeling system, i>j always.
-								// So if choosing between (1,3) and (3,1), look for the (3,1) element.	
-                if (class_A[iii-1] > class_A[jjj-1])
-                {
-                    new_iii = class_A[iii-1];
-                    new_jjj = class_A[jjj-1];
-                }
-                else
-                {
-                    new_iii = class_A[jjj-1];
-                    new_jjj = class_A[iii-1];
-                }
-               
-							  // Swap in correct element.	
-                new_cor_A[jjj + ((iii-2)*(iii-1))/2 - 1] =
-                cor_vec[new_jjj + ((new_iii-2)*(new_iii-1))/2 - 1];
-            }
-        }		// Done permuting variance matrix
+			// Shuffle the variance matrix elements to account for new order
+			for (int iii=2; iii<=d; ++iii) 
+			{
+				for (int jjj=1; jjj<=(iii-1); ++jjj) 
+				{          
+					// In our labeling system, i>j always.
+					// So if choosing between (1,3) and (3,1), look for the (3,1) element.	
+					new_iii = std::max(class_A[iii-1], class_A[jjj-1]);
+					new_jjj = std::min(class_A[iii-1], class_A[jjj-1]);
+					
+				    // Swap in correct element.	
+                	final_cor_A_S[jjj + ((iii-2)*(iii-1))/2 - 1] =
+                	cor_vec[new_jjj + ((new_iii-2)*(new_iii-1))/2 - 1];
+                	
+                	// Check if it's a + or - term
+                	if ( (class_S[inner_it][iii-1] + class_S[inner_it][jjj-1]) == 1)
+                	{
+                		final_cor_A_S[jjj + ((iii-2)*(iii-1))/2 - 1] = -1 * final_cor_A_S[jjj + ((iii-2)*(iii-1))/2 - 1];
+                	}
+            	}
+        	}		// Done permuting variance matrix
         
-        // Make the class_S
-        std::vector<int> build_vec;
-        std::vector<std::vector<int> >class_S;
-        int expanded = expand_binary(d, build_vec, class_S);
         
-        if (expanded!=0) {
-            std::cout << "Error creating class_S!";
-            return 1;
-        }
-        
-        // Inner loop over all permutations of S
-        double temp_sum_prob = 0;
-        double temp_sum_err = 0;
-        for (double inner_it=0; inner_it<num_inner_loops; ++inner_it)
-        {
-						// Final form of correlation vector, accounts for multiplying
-						// by +/- 1 to for each s.    
-            std::vector<double> final_cor_A_S(cor_vec.size());
-            
-            // Perform the +/- permutation of Sigma_A.
-            // At the same time, build the variance matrix back up.
-            mat v_mat(d,d);
-            
-            for (int iii=2; iii<=d; ++iii) {
-                for (int jjj=1; jjj<=(iii-1); ++jjj) {
-                    
-                    if ( (class_S[inner_it][iii-1] + class_S[inner_it][jjj-1])==1 )
-                    {
-                        final_cor_A_S[jjj + ((iii-2)*(iii-1))/2 - 1] =
-                        -1 * new_cor_A[jjj + ((iii-2)*(iii-1))/2 - 1];
-                    } else
-                    {
-                        final_cor_A_S[jjj + ((iii-2)*(iii-1))/2 - 1] =
-                        1 * new_cor_A[jjj + ((iii-2)*(iii-1))/2 - 1];
-                    }
-                    
-                    // build
-                    v_mat(iii-1,jjj-1) = final_cor_A_S[jjj + ((iii-2)*(iii-1))/2 - 1];
-                    v_mat(jjj-1,iii-1) = final_cor_A_S[jjj + ((iii-2)*(iii-1))/2 - 1];
-                }
-            }
-            
-            //  build diagonals
-            for (int temp_it=0; temp_it<d; ++temp_it)
-            {
-                v_mat(temp_it, temp_it) = 1;
-            }
-            
-            // bottom left addition
-            mat bottom_left = Delta_p*v_mat;
-            // bottom right
-            mat bottom_right = bottom_left*Delta_p.t();
-            
-            // The variances of the (p*1)x(p*1) lower right corner
-            // Divide to make these unity
-            std::vector<double> lower_vars(d-1);
-            for (int temp_it=0; temp_it<(d-1); ++temp_it)
-                lower_vars[temp_it] = bottom_right(temp_it, temp_it);
-            
-            // Add to final_cor_s_a
+        	// Build bottom left and bottom right matrices
+        	std::vector<std::vector<double>> bottom_left((d-1), std::vector<double>(d));
+        	std::vector<std::vector<double>> bottom_right((d-1), std::vector<double>(d-1));
+        	 
+        	// Do the multiplication by Delta_p to get bottom_left
+        	// Delta_p looks like [-1	1	0	0
+        	//						0	-1	1	0
+        	//						0	0	-1	1]
+        	// And we want \Delta_p %*% \Sigma_A_S
+        	for (int iii=1; iii<=(d-1); ++iii) 
+			{
+				for (int jjj=1; jjj<=d; ++jjj) 
+				{          
+					// Get the minus term first
+					new_iii = std::max(iii, jjj);
+					new_jjj = std::min(iii, jjj);
+					
+					// Diagonal elements are 1
+					if (new_iii == new_jjj) {
+						minus_term = -1;
+					} else {
+						minus_term = -1 * final_cor_A_S[new_jjj + ((new_iii-2)*(new_iii-1))/2 - 1];
+					}
+					
+					// Now get the plus term
+					new_iii = std::max(iii+1, jjj);
+					new_jjj = std::min(iii+1, jjj);
+					if (new_iii == new_jjj) {
+						plus_term = 1;
+					} else {
+						plus_term = final_cor_A_S[new_jjj + ((new_iii-2)*(new_iii-1))/2 - 1];
+					}
+					
+					// Remember the matrix starts from index [0,0]
+					bottom_left[iii-1][jjj-1] = plus_term + minus_term;
+            	}
+        	}		// Done with bottom_left
+        	
+        	// Multiply bottom_left by t(Delta_p) to get bottom_right
+        	for (int iii=0; iii<(d-1); ++iii)
+        	{
+        		for (int jjj=0; jjj<=iii; ++jjj)
+        		{
+        			bottom_right[iii][jjj] = bottom_left[iii][jjj+1] - bottom_left[iii][jjj];
+        		}
+        	}
+        	
+        	 // Add to final_cor_s_a
             // Divide to get the variances of 1
             // It's clear that we need to divide!!! or else the variance matrix is not p.s.d
             for (int temp_it=0; temp_it<(d-1); ++temp_it)
             {
                 for (int second_it=0; second_it<d; ++second_it)
-                    final_cor_A_S.push_back(bottom_left(temp_it, second_it) / sqrt(lower_vars[temp_it]));
+                    final_cor_A_S.push_back(bottom_left[temp_it][second_it] / sqrt(bottom_right[temp_it][temp_it]));
                 
                 for (int second_it=0; second_it<temp_it; ++second_it)
-                    final_cor_A_S.push_back(bottom_right(temp_it, second_it)
-                                            / (sqrt(lower_vars[temp_it])*sqrt(lower_vars[second_it])));
+                    final_cor_A_S.push_back(bottom_right[temp_it][second_it]
+                                            / (sqrt(bottom_right[temp_it][temp_it])*sqrt(bottom_right[second_it][second_it])));
             }
-            
+        	
+        	
             // Perform the integration
             double integration_error;
             double* lower_array = &lower_bound[0];
@@ -235,488 +238,6 @@ double exact_calc(const std::vector<double> &bounds,
 }
 
 
-
-
-
-
-//////////////////////////////////////////////////////////////////////////////////////////
-//////////////////////////////////////////////////////////////////////////////////////////
-// Exchangeable approximation to exact calc
-
-double exact_calc_exch(const std::vector<double> &bounds,
-                  const std::vector<double> &cor_vec)
-{
-    int d = bounds.size();
-    double num_inner_loops = pow(2.0, d);
-
-    // Make the upper and lower bounds
-    std::vector<double> lower_bound((2*d-1), 0);
-    std::vector<double> upper_bound((2*d-1), 999);
-
-		 for (int temp_it=1; temp_it<d; ++temp_it)
-    {
-        lower_bound[temp_it] = -999;
-    }
-    for (int temp_it=0; temp_it<d; ++temp_it)
-    {
-        upper_bound[temp_it] = bounds[temp_it];
-    }
-
-		// Find the mean of the covariance vector
-		double num_rho = d*(d-1)/2;
-		double mean_rho = 0;	
-		for (int temp_it=0; temp_it<num_rho; temp_it++)
-		{
-			mean_rho += cor_vec[temp_it] / num_rho;
-		}
-
-		// Build the (exchangeable) correlation vector
-		std::vector<int> new_cor_A(num_rho, mean_rho);
-
-    // Random seed before integration starts
-    srand(time(NULL));
-
-    // All permutations of order of observations
-    std::vector<int> class_A(d);
-    for (int temp_it=0; temp_it<d; ++temp_it)
-    {
-        class_A[temp_it] = temp_it + 1;
-    }
-
-		// Account for delta_p
-    mat Delta_p(d-1,d);
-    Delta_p.zeros();
-
-    for (int temp_it=0; temp_it<(d-1); ++temp_it)
-    {
-        Delta_p(temp_it, temp_it) = -1;
-        Delta_p(temp_it, temp_it+1) = 1;
-    }
-
-		// Make the class_S
-    std::vector<int> build_vec;
-    std::vector<std::vector<int> >class_S;
-    int expanded = expand_binary(d, build_vec, class_S);
-   
-    if (expanded!=0) {
-        std::cout << "Error creating class_S!";
-        return 1;
-    }
-
-    // Inner loop over all permutations of S
-    double temp_sum_prob = 0;
-    double temp_sum_err = 0;
-
-    for (double inner_it=0; inner_it<num_inner_loops; ++inner_it)
-    {
-
-        std::vector<double> final_cor_A_S(cor_vec.size());
-
-        // Perform the +/- permutation of Sigma_A
-        // At the same time, build the variance matrix back up
-        mat v_mat(d,d);
-
-			 for (int iii=2; iii<=d; ++iii) {
-            for (int jjj=1; jjj<=(iii-1); ++jjj) {
-
-                if ( (class_S[inner_it][iii-1] + class_S[inner_it][jjj-1])==1 )
-                {
-                    final_cor_A_S[jjj + ((iii-2)*(iii-1))/2 - 1] =
-                    -1 * new_cor_A[jjj + ((iii-2)*(iii-1))/2 - 1];
-                } else
-                {
-                    final_cor_A_S[jjj + ((iii-2)*(iii-1))/2 - 1] =
-                    1 * new_cor_A[jjj + ((iii-2)*(iii-1))/2 - 1];
-                }
-
-                // build
-                v_mat(iii-1,jjj-1) = final_cor_A_S[jjj + ((iii-2)*(iii-1))/2 - 1];
-                v_mat(jjj-1,iii-1) = final_cor_A_S[jjj + ((iii-2)*(iii-1))/2 - 1];
-            }
-        }
-
-        //  build diagonals
-        for (int temp_it=0; temp_it<d; ++temp_it)
-        {
-            v_mat(temp_it, temp_it) = 1;
-        }
-
-        // bottom left addition
-        mat bottom_left = Delta_p*v_mat;
-        // bottom right
-        mat bottom_right = bottom_left*Delta_p.t();
-
-        // The variances of the (p*1)x(p*1) lower right corner
-        // Divide to make these unity
-        std::vector<double> lower_vars(d-1);
-        for (int temp_it=0; temp_it<(d-1); ++temp_it)
-            lower_vars[temp_it] = bottom_right(temp_it, temp_it);
-
-        // Add to final_cor_s_a
-        // Divide to get the variances of 1
-        // It's clear that we need to divide!!! or else the variance matrix is not p.s.d
-        // The division is fine because the last (d-1) bounds are 0 to Inf, otherwise we
-        // would also have to divide the bounds by the same amount.
-        
-        for (int temp_it=0; temp_it<(d-1); ++temp_it)
-        {
-            for (int second_it=0; second_it<d; ++second_it)
-                final_cor_A_S.push_back(bottom_left(temp_it, second_it) / sqrt(lower_vars[temp_it]));
-
-            for (int second_it=0; second_it<temp_it; ++second_it)
-                final_cor_A_S.push_back(bottom_right(temp_it, second_it)
-                                        / (sqrt(lower_vars[temp_it])*sqrt(lower_vars[second_it])));
-        }
-
-		    // Perform the integration
-        double integration_error;
-        double* lower_array = &lower_bound[0];
-        double* upper_array = &upper_bound[0];
-        double* cor_array = &final_cor_A_S[0];
-
-        double integral_result = pmvnorm_B((2*d-1), lower_array, upper_array, cor_array, &integration_error);
-	
-        temp_sum_prob += integral_result;
-        temp_sum_err += integration_error;
-
-    }   // inner loop, for each S 
-
-
-  	// The p-value
-	  double p_value = 1;
-	  p_value -= temp_sum_prob * factorial(d);
-
-	  return p_value;
-
-}
-
-
-//////////////////////////////////////////////////////////////////////////////////////////
-//////////////////////////////////////////////////////////////////////////////////////////
-// Exchangeable approximation, don't do the +/- permutation for PDF of |Z|
-
-
-double exact_calc_exch_noS(const std::vector<double> &bounds,
-		                      const std::vector<double> &cor_vec)
-{
-    int d = bounds.size();
-
-    // Make the upper and lower bounds
-    std::vector<double> lower_bound((2*d-1), 0);
-    std::vector<double> upper_bound((2*d-1), 999);
-
-     for (int temp_it=1; temp_it<d; ++temp_it)
-    {
-        lower_bound[temp_it] = -999;
-    }
-    for (int temp_it=0; temp_it<d; ++temp_it)
-    {
-        upper_bound[temp_it] = bounds[temp_it];
-    }
-
-    // Random seed before integration starts
-    srand(time(NULL));
-
-		// No need to modify correlation vector
-		std::vector<double> final_cor_A_S = cor_vec;
-
-		// Rebuild the variance matrix	
-		mat v_mat(d,d);
-
-    for (int iii=2; iii<=d; ++iii) {
-       for (int jjj=1; jjj<=(iii-1); ++jjj) {
-
-           // build
-           v_mat(iii-1,jjj-1) = final_cor_A_S[jjj + ((iii-2)*(iii-1))/2 - 1];
-           v_mat(jjj-1,iii-1) = final_cor_A_S[jjj + ((iii-2)*(iii-1))/2 - 1];
-       }
-    }
-
-    //  build diagonals
-    for (int temp_it=0; temp_it<d; ++temp_it)
-    {
-        v_mat(temp_it, temp_it) = 1;
-    }
-
-    // Account for delta_p
-    mat Delta_p(d-1,d);
-    Delta_p.zeros();
-
- 		for (int temp_it=0; temp_it<(d-1); ++temp_it)
-	  {
-        Delta_p(temp_it, temp_it) = -1;
-        Delta_p(temp_it, temp_it+1) = 1;
-    }
-
-
-    // bottom left addition
-    mat bottom_left = Delta_p*v_mat;
-    // bottom right
-    mat bottom_right = bottom_left*Delta_p.t();
-
-    // The variances of the (p*1)x(p*1) lower right corner
-    // Divide to make these unity
-    std::vector<double> lower_vars(d-1);
-    for (int temp_it=0; temp_it<(d-1); ++temp_it)
-        lower_vars[temp_it] = bottom_right(temp_it, temp_it);
-
-    // Add to final_cor_s_a
-    // Divide to get the variances of 1
-    // It's clear that we need to divide!!! or else the variance matrix is not p.s.d
-    for (int temp_it=0; temp_it<(d-1); ++temp_it)
-    {
-        for (int second_it=0; second_it<d; ++second_it)
-            final_cor_A_S.push_back(bottom_left(temp_it, second_it) / sqrt(lower_vars[temp_it]));
-
-        for (int second_it=0; second_it<temp_it; ++second_it)
-            final_cor_A_S.push_back(bottom_right(temp_it, second_it)
-                                    / (sqrt(lower_vars[temp_it])*sqrt(lower_vars[second_it])));
-    }
-
-	  // Perform the integration
-    double integration_error;
-    double* lower_array = &lower_bound[0];
-    double* upper_array = &upper_bound[0];
-    double* cor_array = &final_cor_A_S[0];
-
-    double integral_result = pmvnorm_B((2*d-1), lower_array, upper_array, cor_array, &integration_error);
-
-		double p_value = 1;
-		p_value -= pow(2.0, d) * factorial(d) * integral_result;
-
-		return p_value;
-}
-
-
-
-//////////////////////////////////////////////////////////////////////////////////////////
-//////////////////////////////////////////////////////////////////////////////////////////
-// Approximate exact calculation without running through all permutations of order.
-// Just use 1 - d!*P(firstorder), similar to exchangeable approximation.
-
-double exact_calc_noperm(const std::vector<double> &bounds,
-                  const std::vector<double> &cor_vec)
-{
-    int d = bounds.size();
-    double num_inner_loops = pow(2.0, d);
-
-    // Make the upper and lower bounds
-    std::vector<double> lower_bound((2*d-1), 0);
-    std::vector<double> upper_bound((2*d-1), 999);
-
-     for (int temp_it=1; temp_it<d; ++temp_it)
-    {
-        lower_bound[temp_it] = -999;
-    }
-    for (int temp_it=0; temp_it<d; ++temp_it)
-    {
-        upper_bound[temp_it] = bounds[temp_it];
-    }
-
-    // Random seed before integration starts
-    srand(time(NULL));
-
-		// Don't ever need to permute this, just here for consistency
-		std::vector<double> new_cor_A = cor_vec;
-
-	  // Account for delta_p
-    mat Delta_p(d-1,d);
-    Delta_p.zeros();
-
-    for (int temp_it=0; temp_it<(d-1); ++temp_it)
-    {
-        Delta_p(temp_it, temp_it) = -1;
-        Delta_p(temp_it, temp_it+1) = 1;
-    }
-		 // Make the class_S
-    std::vector<int> build_vec;
-    std::vector<std::vector<int> >class_S;
-    int expanded = expand_binary(d, build_vec, class_S);
-
-    if (expanded!=0) {
-        std::cout << "Error creating class_S!";
-        return 1;
-    }
-
-    // Inner loop over all permutations of S
-    double temp_sum_prob = 0;
-    double temp_sum_err = 0;
-
-	 for (double inner_it=0; inner_it<num_inner_loops; ++inner_it)
-    {
-
-        std::vector<double> final_cor_A_S(cor_vec.size());
-
-        // Perform the +/- permutation of Sigma_A
-        // At the same time, build the variance matrix back up
-        mat v_mat(d,d);
-
-       for (int iii=2; iii<=d; ++iii) {
-            for (int jjj=1; jjj<=(iii-1); ++jjj) {
-
-                if ( (class_S[inner_it][iii-1] + class_S[inner_it][jjj-1])==1 )
-                {
-                    final_cor_A_S[jjj + ((iii-2)*(iii-1))/2 - 1] =
-                    -1 * new_cor_A[jjj + ((iii-2)*(iii-1))/2 - 1];
-                } else
-                {
-                    final_cor_A_S[jjj + ((iii-2)*(iii-1))/2 - 1] =
-                    1 * new_cor_A[jjj + ((iii-2)*(iii-1))/2 - 1];
-                }
-
-                // build
-                v_mat(iii-1,jjj-1) = final_cor_A_S[jjj + ((iii-2)*(iii-1))/2 - 1];
-                v_mat(jjj-1,iii-1) = final_cor_A_S[jjj + ((iii-2)*(iii-1))/2 - 1];
-            }
-        }
-
-        //  build diagonals
-        for (int temp_it=0; temp_it<d; ++temp_it)
-        {
-            v_mat(temp_it, temp_it) = 1;
-        }
-
-        // bottom left addition
-        mat bottom_left = Delta_p*v_mat;
-        // bottom right
-        mat bottom_right = bottom_left*Delta_p.t();
-
-        // The variances of the (p*1)x(p*1) lower right corner
-        // Divide to make these unity
-        std::vector<double> lower_vars(d-1);
-        for (int temp_it=0; temp_it<(d-1); ++temp_it)
-            lower_vars[temp_it] = bottom_right(temp_it, temp_it);
-
-        // Add to final_cor_s_a
-        // Divide to get the variances of 1
-        // It's clear that we need to divide!!! or else the variance matrix is not p.s.d
-        for (int temp_it=0; temp_it<(d-1); ++temp_it)
-        {
-            for (int second_it=0; second_it<d; ++second_it)
-                final_cor_A_S.push_back(bottom_left(temp_it, second_it) / sqrt(lower_vars[temp_it]));
-
-            for (int second_it=0; second_it<temp_it; ++second_it)
-                final_cor_A_S.push_back(bottom_right(temp_it, second_it)
-                                        / (sqrt(lower_vars[temp_it])*sqrt(lower_vars[second_it])));
-        }
-
-        // Perform the integration
-        double integration_error;
-        double* lower_array = &lower_bound[0];
-        double* upper_array = &upper_bound[0];
-        double* cor_array = &final_cor_A_S[0];
-
-        double integral_result = pmvnorm_B((2*d-1), lower_array, upper_array, cor_array, &integration_error);
-
-        temp_sum_prob += integral_result;
-        temp_sum_err += integration_error;
-
-        }   // inner loop, for each S 
-
-    // The p-value
-    double p_value = 1.0;
-    p_value -= temp_sum_prob * factorial(d);
-   
-    return p_value;
-}
-
-
-//////////////////////////////////////////////////////////////////////////////////////////
-//////////////////////////////////////////////////////////////////////////////////////////
-// Approximate exact calculation without running through all permutations of order.
-// Also do not sum over all the integrals in S, just assume the first s term in the sum is the average.
-// Just use 1 - 2^d*d!*P(firstorder), similar to exchangeable approximation.
-
-double exact_calc_noperm_noS(const std::vector<double> &bounds,
-                  const std::vector<double> &cor_vec)
-{
-    int d = bounds.size();
-
-    // Make the upper and lower bounds
-    std::vector<double> lower_bound((2*d-1), 0);
-    std::vector<double> upper_bound((2*d-1), 999);
-
-     for (int temp_it=1; temp_it<d; ++temp_it)
-    {
-        lower_bound[temp_it] = -999;
-    }
-    for (int temp_it=0; temp_it<d; ++temp_it)
-    {
-        upper_bound[temp_it] = bounds[temp_it];
-    }
-
-    // Random seed before integration starts
-    srand(time(NULL));
-
-		// Don't ever need to modify correlation vector
-		std::vector<double> final_cor_A_S = cor_vec;
-
-	  // Rebuild the variance matrix  
-    mat v_mat(d,d);
-
-    for (int iii=2; iii<=d; ++iii) {
-       for (int jjj=1; jjj<=(iii-1); ++jjj) {
-
-           // build
-           v_mat(iii-1,jjj-1) = final_cor_A_S[jjj + ((iii-2)*(iii-1))/2 - 1];
-           v_mat(jjj-1,iii-1) = final_cor_A_S[jjj + ((iii-2)*(iii-1))/2 - 1];
-       }
-    }
-
-    //  build diagonals
-    for (int temp_it=0; temp_it<d; ++temp_it)
-    {
-        v_mat(temp_it, temp_it) = 1;
-    }
-
-    // Account for delta_p
-    mat Delta_p(d-1,d);
-    Delta_p.zeros();
-
-    for (int temp_it=0; temp_it<(d-1); ++temp_it)
-    {
-        Delta_p(temp_it, temp_it) = -1;
-        Delta_p(temp_it, temp_it+1) = 1;
-    }
-
-
-    // bottom left addition
-    mat bottom_left = Delta_p*v_mat;
-    // bottom right
-    mat bottom_right = bottom_left*Delta_p.t();
-
-    // The variances of the (p*1)x(p*1) lower right corner
-    // Divide to make these unity
-    std::vector<double> lower_vars(d-1);
-    for (int temp_it=0; temp_it<(d-1); ++temp_it)
-        lower_vars[temp_it] = bottom_right(temp_it, temp_it);
-
-    // Add to final_cor_s_a
-    // Divide to get the variances of 1
-    // It's clear that we need to divide!!! or else the variance matrix is not p.s.d
-    for (int temp_it=0; temp_it<(d-1); ++temp_it)
-    {
-        for (int second_it=0; second_it<d; ++second_it)
-            final_cor_A_S.push_back(bottom_left(temp_it, second_it) / sqrt(lower_vars[temp_it]));
-
-        for (int second_it=0; second_it<temp_it; ++second_it)
-            final_cor_A_S.push_back(bottom_right(temp_it, second_it)
-                                    / (sqrt(lower_vars[temp_it])*sqrt(lower_vars[second_it])));
-    }
-
-    // Perform the integration
-    double integration_error;
-    double* lower_array = &lower_bound[0];
-    double* upper_array = &upper_bound[0];
-    double* cor_array = &final_cor_A_S[0];
-
-    double integral_result = pmvnorm_B((2*d-1), lower_array, upper_array, cor_array, &integration_error);
-
-    double p_value = 1;
-    p_value -= pow(2.0, d) * factorial(d) * integral_result;
-
-    return p_value;
-}
 
 
 
@@ -790,22 +311,6 @@ int main(int argc, const char * argv[]) {
 		{
 		case 0:
 			result = exact_calc(boundaryPts, cors_vec);
-			break;
-
-		case 1: 
-	    result = exact_calc_exch(boundaryPts, cors_vec);
- 			break;
-
-		case 2:
-			result = exact_calc_exch_noS(boundaryPts, cors_vec);
-			break;
-
-		case 3:
-			result = exact_calc_noperm(boundaryPts, cors_vec);
-			break;
-
-		case 4:
-			result = exact_calc_noperm_noS(boundaryPts, cors_vec);
 			break;
 
 		default:
