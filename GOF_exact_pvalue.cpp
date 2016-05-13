@@ -20,6 +20,8 @@
 // all the relevant correlation matrices without the help of preexisting functions). Before this change,
 // a p-value for d=5 took approximately 50 seconds on local mac.
 // However after the update it's even slower! Approx 1 min. :(
+// Then we updated it again to split up the reordering and +/- loops, now down to ~48 seconds for d=5.
+
 
 #include <cmath>
 #include <iostream>
@@ -112,10 +114,31 @@ double exact_calc(const std::vector<double> &bounds,
       	double temp_sum_prob = 0;
       	double temp_sum_err = 0;
       	
+      	// Correlation vector for new ordering 
+      	// We will reference this always when doing the +/- permutation
+		std::vector<double> new_cor_A(cor_vec.size());
+      	
+      	// Shuffle the variance matrix elements to account for new order
+		for (int iii=2; iii<=d; ++iii) 
+		{
+			for (int jjj=1; jjj<=(iii-1); ++jjj) 
+			{          
+				// In our labeling system, i>j always.
+				// So if choosing between (1,3) and (3,1), look for the (3,1) element.	
+				new_iii = std::max(class_A[iii-1], class_A[jjj-1]);
+				new_jjj = std::min(class_A[iii-1], class_A[jjj-1]);
+					
+				// Swap in correct element.	
+                new_cor_A[jjj + ((iii-2)*(iii-1))/2 - 1] =
+                cor_vec[new_jjj + ((new_iii-2)*(new_iii-1))/2 - 1];
+        	}		// Done permuting variance matrix
+        }
+        
+      	
 		// Inner loop shuffles the permutation of +/-
 		for (double inner_it=0; inner_it<num_inner_loops; ++inner_it)
 		{
-			// New correlation vector for new ordering and +/-
+			// New correlation vector for +/-
 			std::vector<double> final_cor_A_S(cor_vec.size());
         
 			// Shuffle the variance matrix elements to account for new order
@@ -123,19 +146,13 @@ double exact_calc(const std::vector<double> &bounds,
 			{
 				for (int jjj=1; jjj<=(iii-1); ++jjj) 
 				{          
-					// In our labeling system, i>j always.
-					// So if choosing between (1,3) and (3,1), look for the (3,1) element.	
-					new_iii = std::max(class_A[iii-1], class_A[jjj-1]);
-					new_jjj = std::min(class_A[iii-1], class_A[jjj-1]);
-					
-				    // Swap in correct element.	
-                	final_cor_A_S[jjj + ((iii-2)*(iii-1))/2 - 1] =
-                	cor_vec[new_jjj + ((new_iii-2)*(new_iii-1))/2 - 1];
-                	
+
                 	// Check if it's a + or - term
                 	if ( (class_S[inner_it][iii-1] + class_S[inner_it][jjj-1]) == 1)
                 	{
-                		final_cor_A_S[jjj + ((iii-2)*(iii-1))/2 - 1] = -1 * final_cor_A_S[jjj + ((iii-2)*(iii-1))/2 - 1];
+                		final_cor_A_S[jjj + ((iii-2)*(iii-1))/2 - 1] = -1 * new_cor_A[jjj + ((iii-2)*(iii-1))/2 - 1];
+                	} else {
+                		final_cor_A_S[jjj + ((iii-2)*(iii-1))/2 - 1] = new_cor_A[jjj + ((iii-2)*(iii-1))/2 - 1];
                 	}
             	}
         	}		// Done permuting variance matrix
@@ -150,6 +167,7 @@ double exact_calc(const std::vector<double> &bounds,
         	//						0	-1	1	0
         	//						0	0	-1	1]
         	// And we want \Delta_p %*% \Sigma_A_S
+        	
         	for (int iii=1; iii<=(d-1); ++iii) 
 			{
 				for (int jjj=1; jjj<=d; ++jjj) 
